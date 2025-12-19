@@ -1,0 +1,1431 @@
+{
+  "name": "Wazuh SOAR: Production Fixed",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        624,
+        144
+      ],
+      "id": "e3533692-71e8-43a8-afbf-d5d73530ef83",
+      "name": "No Operation, do nothing"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -976,
+        368
+      ],
+      "id": "69630b99-fda5-4d7a-9476-ce5f19632656",
+      "name": "Pipeline heartbeat"
+    },
+    {
+      "parameters": {
+        "operation": "pop",
+        "list": "wazuh:alerts",
+        "propertyName": "data",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        -800,
+        368
+      ],
+      "id": "9ebaecee-8185-4a24-8dae-7e32d8c7b0b4",
+      "name": "Fetch Pending Events",
+      "credentials": {
+        "redis": {
+          "id": "gBRAiC8E3zTST9i5",
+          "name": "Redis account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// PROD GRADE: Normalization & Enrichment\n\n// Use a Code node in \"Run Once\" mode for better performance if possible, \n// otherwise the map() is necessary. Assuming map() for generality.\nconst items = $input.all();\n\nreturn items.map(item => {\n    let output = {};\n    const root = item.json;\n    let logError = null;\n\n    try {\n        // 1. EXTRACTION: Handle \"Wrapper\" format vs \"Raw\" format\n        let rawPayload = root.data || root.result || root.message || root; \n        \n        if (typeof rawPayload === 'string') {\n            try { \n                output = JSON.parse(rawPayload); \n            } catch(e) { \n                logError = `JSON Parse Error: ${e.message}`; \n                output = { original_payload: rawPayload }; // Keep original for debugging\n            }\n        } else if (typeof rawPayload === 'object') {\n            output = rawPayload;\n        }\n\n        // 2. VALIDATION: Drop empty/garbage events (continue on error path)\n        if (!output.rule && !output.id) {\n            logError = logError || \"Invalid Schema: Missing Rule or ID.\";\n            throw new Error(logError); // Throwing inside try/catch sends to error path\n        }\n\n        // 3. FLATTENING & ENRICHMENT\n        \n        // A. Source IP Logic \n        const sourceIp = output.data?.srcip || output.agent?.ip || \"0.0.0.0\";\n        \n        // B. MITRE Extraction (Safe Navigation)\n        const mitreTactic = output.rule?.mitre?.tactic?.[0] || \"Unknown Tactic\";\n        const mitreId = output.rule?.mitre?.id?.[0] || \"\";\n\n        // C. The \"Story\" (Tactical Detail)\n        let details = output.full_log || \"No details available\";\n        if (output.data?.dstuser) {\n            details = `User: ${output.data.dstuser} (UID: ${output.data.uid})`;\n        }\n\n        // Success Output\n        return {\n            json: {\n                ...output,\n                srcip: sourceIp,           \n                meta_tactic: mitreTactic,  \n                meta_mitre_id: mitreId,   \n                meta_details: details,    \n                _metadata: { valid: true, processed_at: new Date().toISOString(), error: logError }\n            }\n        };\n\n    } catch (err) {\n        // Error Output: Send a structured object with the error to the next node\n        return { \n            json: { \n                error: err.message, \n                _metadata: { valid: false, processed_at: new Date().toISOString() } \n            } \n        };\n    }\n});"
+      },
+      "name": "Normalise Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        32,
+        368
+      ],
+      "id": "651f0ad9-ccaf-440e-8279-d19a6fb0cbb9"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "propertyName": "is_whitelisted",
+        "key": "=whitelist:{{ $json.srcip }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        240,
+        368
+      ],
+      "id": "922bbde6-127e-4f86-bcb7-64e8d9cd50a2",
+      "name": "Query Allowlist",
+      "credentials": {
+        "redis": {
+          "id": "gBRAiC8E3zTST9i5",
+          "name": "Redis account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "2ae2ff5a-6f46-4d16-85cf-fc9e22eeca82",
+              "leftValue": "={{ $json.is_whitelisted }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        448,
+        368
+      ],
+      "id": "4a33b2b4-ea57-4029-b186-8bcfc35b9732",
+      "name": "Filter Allowlisted"
+    },
+    {
+      "parameters": {
+        "operation": "incr",
+        "key": "=stats:{{ $('Normalise Payload').item.json.rule.id }}:count",
+        "expire": true,
+        "ttl": 86400
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        640,
+        352
+      ],
+      "id": "0fa25c30-a293-4816-a8ab-788633528b4e",
+      "name": "Increment Attack Metric",
+      "credentials": {
+        "redis": {
+          "id": "gBRAiC8E3zTST9i5",
+          "name": "Redis account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "propertyName": "GetCurrentIndex",
+        "key": "=index:active_rules",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        912,
+        176
+      ],
+      "id": "ef5f2c9a-15e1-43d1-9e5d-169e41967914",
+      "name": "Register Active Rule",
+      "credentials": {
+        "redis": {
+          "id": "gBRAiC8E3zTST9i5",
+          "name": "Redis account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "set",
+        "key": "=rules:{{ $('Normalise Payload').item.json.rule.id }}",
+        "value": "={\n  \"name\": \"{{ $('Normalise Payload').item.json.rule.description }}\",\n  \"level\": \"{{ $('Normalise Payload').item.json.rule.level }}\",\n  \"id\": \"{{ $('Normalise Payload').item.json.id }}\"\n}"
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        912,
+        -16
+      ],
+      "id": "0a40b068-e9db-4be4-a039-d7186e06e728",
+      "name": "Cache Rule Context",
+      "credentials": {
+        "redis": {
+          "id": "gBRAiC8E3zTST9i5",
+          "name": "Redis account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "b45a48e0-606f-43cd-8ecc-afe50f5ac098",
+              "leftValue": "={{ $json.dedup_check }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "empty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {
+          "ignoreCase": true
+        }
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1200,
+        352
+      ],
+      "id": "86eb0e34-c608-4ce7-a559-3e6e85dd24f6",
+      "name": "Suppress Noise"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "propertyName": "dedup_check",
+        "key": "=lock:alert:{{ $('Normalise Payload').item.json.rule.id }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        1024,
+        352
+      ],
+      "id": "1d16be20-4270-4195-b348-126a804e83dd",
+      "name": "Query Throttle Cache",
+      "credentials": {
+        "redis": {
+          "id": "gBRAiC8E3zTST9i5",
+          "name": "Redis account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "set",
+        "key": "=lock:alert:{{ $('Normalise Payload').item.json.rule.id }}",
+        "value": "1",
+        "keyType": "string",
+        "expire": true,
+        "ttl": 900
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        1392,
+        432
+      ],
+      "id": "02246051-fa51-4867-946b-08a100d1ae08",
+      "name": "Update Throttle",
+      "credentials": {
+        "redis": {
+          "id": "gBRAiC8E3zTST9i5",
+          "name": "Redis account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "push",
+        "list": "=stats:{{ $('Normalise Payload').item.json.rule.id }}:ips",
+        "messageData": "={{ $('Normalise Payload').item.json.srcip }}"
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        832,
+        352
+      ],
+      "id": "66a9be24-d8db-4d42-a657-8a1cf1b37c1f",
+      "name": "Archive alert",
+      "credentials": {
+        "redis": {
+          "id": "gBRAiC8E3zTST9i5",
+          "name": "Redis account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "=https://www.virustotal.com/api/v3/ip_addresses/{{ $('Normalise Payload').item.json.srcip }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        1952,
+        432
+      ],
+      "id": "3d61c1f2-1fca-49c7-8a14-6c60eaa56911",
+      "name": "Query VirusTotal",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "NVOHJ3qA8yLw33eI",
+          "name": "Header Auth account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "1310c558-212f-402a-8835-caa4f9760c97",
+              "leftValue": "={{ $('Normalise Payload').item.json.srcip }}",
+              "rightValue": "192.168. ",
+              "operator": {
+                "type": "string",
+                "operation": "notStartsWith"
+              }
+            },
+            {
+              "id": "08eb8007-596e-4a11-934d-2a36c0026f95",
+              "leftValue": "={{ $('Normalise Payload').item.json.srcip }}",
+              "rightValue": "172.16.",
+              "operator": {
+                "type": "string",
+                "operation": "notStartsWith"
+              }
+            },
+            {
+              "id": "b1018121-3652-4565-9cab-f9d7021fd692",
+              "leftValue": "={{ $('Normalise Payload').item.json.srcip }}",
+              "rightValue": "10.",
+              "operator": {
+                "type": "string",
+                "operation": "notStartsWith"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1568,
+        448
+      ],
+      "id": "20ff66fe-bac0-4629-b4f5-97ddb10a42c2",
+      "name": "Filter Private IPs"
+    },
+    {
+      "parameters": {
+        "mode": "raw",
+        "jsonOutput": "={\n  \"threat_intel\": {{ $json.data.attributes.last_analysis_stats.malicious > 0 ? \"🔴 Malicious\" : \"🟢 Clean\" }}\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2128,
+        432
+      ],
+      "id": "67aa5e59-d893-4d56-84b9-333657465334",
+      "name": "Format VT data"
+    },
+    {
+      "parameters": {
+        "mode": "raw",
+        "jsonOutput": "{\n  \"threat_intel\": \"🏢 Internal IP\"\n}\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1952,
+        624
+      ],
+      "id": "7a77f2e4-8587-4d8b-873f-935923d970b5",
+      "name": "Set Default Status"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        2208,
+        688
+      ],
+      "id": "7d96df94-4888-4426-8f0d-e24c9bf00c81",
+      "name": "Combine Context"
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "#security-alerts",
+          "mode": "name"
+        },
+        "messageType": "block",
+        "blocksUi": "={\n  \"channel\": \"security-alerts\",\n  \"text\": \"{{ '🚨 ' + ($('Normalise Payload').item.json.rule.description || 'Security Alert Detected') }}\",\n  \"blocks\": [\n    {\n      \"type\": \"header\",\n      \"text\": {\n        \"type\": \"plain_text\",\n        \"text\": \"🚨 {{ $('Normalise Payload').item.json.rule.description || 'Security Alert Detected' }}\",\n        \"emoji\": true\n      }\n    },\n    {\n      \"type\": \"section\",\n      \"fields\": [\n        {\n          \"type\": \"mrkdwn\",\n          \"text\": \"*Severity:*\\n High (Level {{ $('Normalise Payload').item.json.rule.level || 'N/A' }})\"\n        },\n        {\n          \"type\": \"mrkdwn\",\n          \"text\": \"*Agent:*\\n {{ $('Normalise Payload').item.json.agent.name || 'Unknown' }} ({{ $('Normalise Payload').item.json.agent.ip }})\"\n        }\n      ]\n    },\n    {\n      \"type\": \"section\",\n      \"fields\": [\n        {\n          \"type\": \"mrkdwn\",\n          \"text\": \"*Rule ID:*\\n `{{ $('Normalise Payload').item.json.rule.id }}`\"\n        },\n        {\n          \"type\": \"mrkdwn\",\n          \"text\": \"*Threat Intel (VT):*\\n {{ $json.threat_intel }}\"\n        }\n      ]\n    },\n    {\n      \"type\": \"divider\"\n    },\n    {\n      \"type\": \"section\",\n      \"text\": {\n        \"type\": \"mrkdwn\",\n        \"text\": \"*Recommended Action:* Review the alert details above.\"\n      }\n    },\n    {\n      \"type\": \"section\",\n      \"block_id\": \"duration_section\",\n      \"text\": {\n        \"type\": \"mrkdwn\",\n        \"text\": \"*Whitelist Duration:*\"\n      },\n      \"accessory\": {\n        \"type\": \"static_select\",\n        \"action_id\": \"ttl_duration_select\",\n        \"placeholder\": {\n          \"type\": \"plain_text\",\n          \"text\": \"Whitelist Duration\"\n        },\n        \"initial_option\": { \n          \"text\": { \"type\": \"plain_text\", \"text\": \"1 Week (Default)\" }, \n          \"value\": \"604800\" \n        },\n        \"options\": [\n          { \"text\": { \"type\": \"plain_text\", \"text\": \"1 Hour\" }, \"value\": \"3600\" },\n          { \"text\": { \"type\": \"plain_text\", \"text\": \"1 Day\" }, \"value\": \"86400\" },\n          { \"text\": { \"type\": \"plain_text\", \"text\": \"3 Days\" }, \"value\": \"259200\" },\n          { \"text\": { \"type\": \"plain_text\", \"text\": \"1 Week (Default)\" }, \"value\": \"604800\" },\n          { \"text\": { \"type\": \"plain_text\", \"text\": \"Permanent (No Expiry)\" }, \"value\": \"0\" }\n        ]\n      }\n    },\n    {\n      \"type\": \"actions\",\n      \"block_id\": \"decision_actions\",\n      \"elements\": [\n        {\n          \"type\": \"button\",\n          \"text\": {\n            \"type\": \"plain_text\",\n            \"emoji\": true,\n            \"text\": \"🔴 Isolate Host\"\n          },\n          \"style\": \"danger\",\n          \"action_id\": \"action_isolate\",\n          \"value\": \"isolate|{{ $('Normalise Payload').item.json.agent.ip }}\"\n        },\n        {\n          \"type\": \"button\",\n          \"text\": {\n            \"type\": \"plain_text\",\n            \"emoji\": true,\n            \"text\": \"🟢 Mark False Positive\"\n          },\n          \"style\": \"primary\",\n          \"action_id\": \"action_ignore\",\n          \"value\": \"ignore|{{ $('Normalise Payload').item.json.srcip }}\"\n        }\n      ]\n    },\n    {\n      \"type\": \"context\",\n      \"elements\": [\n        {\n          \"type\": \"mrkdwn\",\n          \"text\": \"Time: {{ $now }} | Workflow: Security-Triage\"\n        }\n      ]\n    }\n  ]\n}",
+        "otherOptions": {}
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [
+        2368,
+        688
+      ],
+      "id": "ae293dad-a5f7-4ec9-b043-422ec14a2e4b",
+      "name": "Notify Slack Channel",
+      "webhookId": "d7783970-dce9-4b9f-9dc7-69dcd65a0ef0",
+      "credentials": {
+        "slackApi": {
+          "id": "rZnQlMiJiKwYwVpo",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -720,
+        2080
+      ],
+      "id": "3d698f66-afdc-4bb3-9563-828095c248c5",
+      "name": "Report Schedule"
+    },
+    {
+      "parameters": {
+        "jsCode": "// This node assumes it receives data items where $json.ruleId is present.\n\n// 1. Get Base URL (No trailing slash)\nconst envUrl = $env.WAZUH_URL || \"https://192.168.1.50\";\nconst WAZUH_BASE = envUrl.replace(/\\/$/, \"\"); \n\n// 2. Context Recovery (Simplified)\nconst ruleId = $json.ruleId || \"Unknown\"; // Use only the flowing data\n\n// 3. Attack Count\nconst fetchNode = $('Atomic Fetch and Reset').item; \nlet rawCount = fetchNode ? (fetchNode.json.count || fetchNode.json.value) : 0;\nlet count = parseInt(rawCount, 10);\nif (isNaN(count)) count = 0;\n\n// 4. Metadata & Alert ID Extraction (remains robust)\nlet meta = { name: \"Unknown Alert\", level: 0 }; \nlet specificAlertId = null;\n\ntry {\n    // Note: The structure of rawMeta depends on the Wazuh API output\n    const rawMeta = $json.rule_meta || $json.data; \n    if (rawMeta) {\n        if (typeof rawMeta === 'string') {\n            meta = JSON.parse(rawMeta);\n        } else if (typeof rawMeta === 'object') {\n            meta = rawMeta; \n        }\n    }\n    // Try to find the specific Alert ID (passed from Workflow A -> Redis)\n    if (meta.id) specificAlertId = meta.id; \n} catch (e) {}\n\n// 5. Severity Logic\nlet severityIcon = \"⚪\"; \nconst level = parseInt(meta?.level, 10) || 0;\nif (level >= 12) severityIcon = \"🔴\"; \nelse if (level >= 7) severityIcon = \"🟡\"; \n\n// 6. Generate Robust Deep Link (remains excellent)\nconst queryField = specificAlertId ? \"id\" : \"rule.id\";\nconst queryValue = specificAlertId || ruleId;\n\nconst deepLink = `${WAZUH_BASE}/app/discover#/?_g=(time:(from:now-24h,to:now))&_a=(columns:!(_source),filters:!(),index:'wazuh-alerts-*',interval:auto,query:(language:kuery,query:'${queryField}:\"${queryValue}\"'),sort:!(!('@timestamp',desc)))`;\n\n// 7. Visual Bar\nconst displayId = ruleId !== \"Unknown\" ? `<${deepLink}|${ruleId}>` : ruleId;\nconst line = `${severityIcon} *${meta.name || \"Unknown\"}* (ID: ${displayId})\\n\\tVol: ${count} | Lvl: ${level}`;\n\nreturn {\n    json: {\n        line_text: line,\n        attack_count: count,\n        rule_level: level,\n        rule_name: meta.name,\n        is_critical: level >= 12\n    }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        544,
+        2080
+      ],
+      "id": "c47cfe48-0766-4df3-90e4-aa1061eb0727",
+      "name": "Generate Row"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "propertyName": "rule_meta",
+        "key": "=rules:{{ $('Parse Rule IDs').item.json.ruleId }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        368,
+        2080
+      ],
+      "id": "dafdef77-4654-4595-abaa-2abf93cc0035",
+      "name": "Hydrate Context",
+      "credentials": {
+        "redis": {
+          "id": "gBRAiC8E3zTST9i5",
+          "name": "Redis account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// 1. Safety Check\nconst allItems = $input.all();\nif (!allItems || allItems.length === 0) {\n  return { json: { final_message: \"⚠️ Report generation skipped: No data received.\" } };\n}\n\n// 2. Init Metrics\nconst seenLines = new Set();\nconst validLines = [];\n\n// Stats Containers\nlet totalAttacks = 0;\nlet levelSum = 0;\nlet topThreat = { name: \"None\", count: -1 };\nlet severity = { crit: 0, high: 0, med: 0, low: 0 };\n\nallItems.forEach(item => {\n  const data = item.json;\n  \n  // Deduplication (Robustness)\n  if (!data.line_text || seenLines.has(data.line_text)) return;\n  seenLines.add(data.line_text);\n  validLines.push(data.line_text);\n\n  // A. Extract Values\n  const vol = parseInt(data.attack_count, 10) || 0;\n  const lvl = parseInt(data.rule_level, 10) || 0;\n  const name = data.rule_name || \"Unknown\";\n\n  // B. Aggregate Globals\n  totalAttacks += vol;\n  levelSum += lvl;\n\n  // C. Find Top Threat (King of the Hill)\n  if (vol > topThreat.count) {\n    topThreat = { name: name, count: vol };\n  }\n\n  // D. Severity Buckets\n  if (lvl >= 12) severity.crit++;\n  else if (lvl >= 7) severity.high++;\n  else if (lvl >= 4) severity.med++;\n  else severity.low++;\n});\n\n// 3. Calculated Analytics\n// Calculate Average Severity (Intensity)\nconst activeCount = validLines.length;\nconst avgLevel = activeCount > 0 ? (levelSum / activeCount).toFixed(1) : 0;\n\n// Determine System Status\nlet sysStatus = \"NOMINAL\";\nlet statusEmoji = \"🟢\";\nif (totalAttacks > 0) { sysStatus = \"WARNING\"; statusEmoji = \"🟡\"; }\nif (severity.crit > 0 || totalAttacks > 100) { sysStatus = \"CRITICAL\"; statusEmoji = \"🔴\"; }\n\n// 4. Timestamp\nconst now = new Date();\nconst timestamp = now.toLocaleString('en-US', { \n    month: 'short', day: '2-digit', \n    hour: '2-digit', minute: '2-digit', \n    timeZone: 'UTC', timeZoneName: 'short' \n});\n\n// 5. Build Detail Text\nconst detailText = validLines.join(\"\\n\\n\");\n\n// 6. Final Message with ANALYTICS BLOCK\nconst finalMessage = \n`*🛡️ SECURITY OPERATIONS REPORT*\n_${timestamp}_\n\n*STATUS:* ${statusEmoji} *${sysStatus}*\n• *Incidents:* ${totalAttacks}\n• *Active Rules:* ${activeCount}\n\n*ANALYTICS:*\n• *Severity:* 🔴 ${severity.crit}  |  🟡 ${severity.high}  |  ⚪ ${severity.low}\n• *Intensity:* Level ${avgLevel} (Avg)\n• *Top Threat:* ${topThreat.name} (${topThreat.count} hits)\n\n────────────────\n*DETECTED THREATS:*\n>>>${detailText || \"_No active threats detected._\"}\n\n────────────────\n_Automated via n8n_`;\n\nreturn {\n  json: {\n    final_message: finalMessage\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        528,
+        1808
+      ],
+      "id": "ad2400e8-aa77-436a-8da0-3d306fe30d95",
+      "name": "Compile Report"
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "#security-reports",
+          "mode": "name"
+        },
+        "text": "={{ $json.final_message }}\n",
+        "otherOptions": {}
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [
+        768,
+        2064
+      ],
+      "id": "3faf24f2-636b-49db-b4ae-bb5024b6de0b",
+      "name": "Send Report",
+      "webhookId": "fb239746-1ea9-46a9-b418-c12386da38a9",
+      "credentials": {
+        "slackApi": {
+          "id": "rZnQlMiJiKwYwVpo",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "f13179f1-d740-46e8-a0a9-7b21a933ca5b",
+              "leftValue": "={{ $json.data }}",
+              "rightValue": "={{ $json.data.timestamp }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "notExists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -592,
+        368
+      ],
+      "id": "09d235f9-baf6-4bfc-beb0-e4fb38282417",
+      "name": "Is Queue Empty",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "4b180614-ba7c-41b8-8a6a-1a3a5c501020",
+              "leftValue": "={{ $json.data.rule }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "exists",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "c6d0be90-540b-4f04-b123-6d06bedbf161",
+              "leftValue": "={{ $json.data.agent.ip }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -336,
+        400
+      ],
+      "id": "23146c1c-8c19-4719-a099-9e0ef13894a9",
+      "name": "Is Payload Valid"
+    },
+    {
+      "parameters": {
+        "operation": "push",
+        "list": "wazuh:errors",
+        "messageData": "={{ JSON.stringify($json) }}"
+      },
+      "type": "@vicenterusso/n8n-nodes-redis-enhanced.redisEnhanced",
+      "typeVersion": 1,
+      "position": [
+        -160,
+        528
+      ],
+      "id": "7d29af08-9b70-4701-a5b6-3ba385a79520",
+      "name": "Log Errors",
+      "credentials": {
+        "redis": {
+          "id": "gBRAiC8E3zTST9i5",
+          "name": "Redis account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "amount": 15
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        2544,
+        688
+      ],
+      "id": "7eeb6894-a831-4791-9cc1-72e4c5d5f52b",
+      "name": "API Ratelimiting",
+      "webhookId": "5a99500c-6c6c-4b68-aca6-456fe8133f74"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "propertyName": "active_rules",
+        "key": "index:active_rules",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        -512,
+        2080
+      ],
+      "id": "464fbb34-304f-4b4c-894f-df3b738586ff",
+      "name": "Fetch Active Index",
+      "credentials": {
+        "redis": {
+          "id": "gBRAiC8E3zTST9i5",
+          "name": "Redis account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// 1. Get the Index from the 'Register Active Rule' node.\n// We use the $() selector which is the most robust way to reference specific nodes.\n// .first() gets the first item (since we are processing a batch).\nconst redisNode = $('Register Active Rule').first();\n\n// Check if we actually got data (Safety Check)\nconst redisJson = redisNode ? redisNode.json : {};\nconst ruleIdsJson = redisJson.GetCurrentIndex || '[]';\n\n// 2. Get the New Rule ID from the 'Normalise Payload' node.\nconst payloadNode = $('Normalise Payload').first();\nconst newRuleId = payloadNode.json.rule.id.toString();\n\n// 3. Logic: Parse, Add, Deduplicate\nlet ruleIds = [];\ntry {\n    ruleIds = JSON.parse(ruleIdsJson);\n    if (!Array.isArray(ruleIds)) ruleIds = [];\n} catch (e) {\n    // If Redis has garbage data, reset to empty to prevent crash\n    ruleIds = [];\n}\n\n// Add ID and Deduplicate\nruleIds.push(newRuleId);\nconst uniqueRuleIds = [...new Set(ruleIds)];\n\n// 4. Return result\nreturn [\n    {\n        json: {\n            updatedRuleIds: JSON.stringify(uniqueRuleIds)\n        }\n    }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        176
+      ],
+      "id": "121b5148-393a-47a3-9a59-18d28955ec9e",
+      "name": "Update Index Code"
+    },
+    {
+      "parameters": {
+        "operation": "set",
+        "key": "index:active_rules",
+        "value": "={{ $json.updatedRuleIds }}"
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        1328,
+        176
+      ],
+      "id": "3c96d6a1-8e6b-40a3-8a92-8d90649e25fe",
+      "name": "Set New Index",
+      "credentials": {
+        "redis": {
+          "id": "gBRAiC8E3zTST9i5",
+          "name": "Redis account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "getset",
+        "key": "=stats:{{ $json.ruleId }}:count",
+        "value": "0",
+        "propertyName": "count"
+      },
+      "type": "@vicenterusso/n8n-nodes-redis-enhanced.redisEnhanced",
+      "typeVersion": 1,
+      "position": [
+        176,
+        2080
+      ],
+      "id": "cd4fbfab-d727-4e9c-aaa3-c698c47391fd",
+      "name": "Atomic Fetch and Reset",
+      "credentials": {
+        "redis": {
+          "id": "gBRAiC8E3zTST9i5",
+          "name": "Redis account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// 1. Get the output directly from the 'Fetch Active Index' node\nconst redisNode = $('Fetch Active Index').first();\n\n// Safety Check: Ensure the node actually returned data\nconst redisJson = redisNode ? redisNode.json : {};\n\n// 2. Extract the JSON string (Use '[]' as a default to simplify error handling)\nconst ruleIdsJson = redisJson.active_rules || redisJson.active_rules_json || redisJson.data || '[]';\n\ntry {\n    // 3. Parse the JSON string into an Array\n    const ruleIds = JSON.parse(ruleIdsJson);\n\n    if (!Array.isArray(ruleIds)) {\n        throw new Error(\"Parsed data is not a valid array.\");\n    }\n    \n    if (ruleIds.length === 0) {\n        console.log(\"Active rules index is empty.\");\n        return []; // Graceful Exit: Stops the reporting pipeline\n    }\n\n    // 4. Map the IDs to the format n8n expects for splitting batches\n    return ruleIds.map(id => ({\n        json: { ruleId: id.toString() }\n    }));\n\n} catch (error) {\n    // CRITICAL FAILURE: If the JSON is corrupt, log the error and stop the report.\n    console.error(\"Critical Failure: Failed to parse active rule IDs:\", error);\n    return [];\n}"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -304,
+        2080
+      ],
+      "id": "94761292-4e0a-44c8-8127-83f6104935f1",
+      "name": "Parse Rule IDs"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -96,
+        2080
+      ],
+      "id": "4ba45f56-4fa8-4b1e-916e-0a39532b811e",
+      "name": "Split in Batches"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "wazuh-response",
+        "options": {
+          "responseData": ""
+        }
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        -784,
+        1216
+      ],
+      "id": "7b031075-3eee-40d7-94ed-8a3efb1b40b5",
+      "name": "Slack Webhook",
+      "webhookId": "d1d9a623-4ffc-4e70-a3e0-07c544b90ea6"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Function to safely extract nested property values\nconst safeGet = (obj, path, defaultValue = undefined) => {\n    if (!obj) return defaultValue;\n    return path.split('.').reduce((acc, part) => acc && acc[part], obj) || defaultValue;\n};\n\n// Start of main workflow execution logic\nconst root = $json; \nlet payload = {};\nlet logMessages = []; // Array to track non-fatal parsing issues\n\n// 1. Core Payload Extraction (Handles String vs. Object)\ntry {\n    if (root.body?.payload) {\n        // Handle Slack's application/x-www-form-urlencoded body format\n        const p = root.body.payload;\n        payload = (typeof p === 'string' && p.startsWith('{')) ? JSON.parse(p) : p;\n    } else {\n        // Fallback for pre-parsed data (e.g., from Test Runs)\n        payload = root.payload || root;\n    }\n} catch (e) {\n    // CRITICAL FAILURE: If the initial payload cannot be parsed, stop execution.\n    // This is the only error that should throw, as subsequent steps are impossible.\n    throw new Error(\"Critical Payload Parsing Error: \" + e.message);\n}\n\n// 2. Validation & Graceful Exit\n// If the payload is from an unhandled Slack event (not a button click), exit gracefully.\nif (!payload.actions?.[0]) {\n    logMessages.push(\"Payload received but contained no actions (likely an unhandled Slack event). Exiting gracefully.\");\n    // Return empty array to stop the workflow without error\n    return [{ json: { log: logMessages } }];\n}\n\n// 3. Extract Core Action Data\nconst action = payload.actions[0];\n\n// Command & Target extraction with robust fallbacks\nconst [command, target] = (action.value || \"unknown|unknown\").split(\"|\");\nconst user = payload.user?.username || \"unknown_user\";\nconst channelId = payload.channel?.id || \"unknown_channel\";\nconst messageTs = payload.message?.ts || \"unknown_ts\";\n\n// 4. Extract Alert Description\nlet alertDescription = \"Unknown Alert / Failed to Extract Rule Title\";\nconst originalMessage = payload.message || payload.container;\n\ntry {\n    // Description is expected in the first 'header' block of the original message\n    const rawText = safeGet(originalMessage, 'blocks.0.text.text');\n    if (rawText) {\n        alertDescription = rawText\n            .replace(/:rotating_light:|🚨|🔴|🟡/g, '') // Clean up emojis/icons\n            .trim();\n    }\n} catch (e) {\n    logMessages.push(\"Warning: Failed to extract alert description.\");\n}\n\n// 5. Extract Dynamic TTL (CRITICAL NEW LOGIC with Robustness)\nlet dynamicTTL = 604800; // Default: 7 days\n\nif (command === 'ignore') {\n    // The path to the selected value must be robustly checked for null/undefined objects\n    const selectedValue = safeGet(\n        payload.state.values, \n        'duration_section.ttl_duration_select.selected_option.value'\n    );\n    \n    // Use the selected value if it's found and is a valid number string\n    if (selectedValue !== undefined && selectedValue !== null && !isNaN(parseInt(selectedValue, 10))) {\n        dynamicTTL = parseInt(selectedValue, 10);\n    } else {\n        logMessages.push(\"Warning: Whitelist Duration selection not found or invalid. Using default TTL (7 days).\");\n    }\n}\n\n\n// 6. Return the Final, Enriched Object\nreturn [\n    {\n        json: {\n            // Core Action Data\n            action_id: action.action_id,\n            command: command,\n            target: target,\n            user: user,\n            channel_id: channelId,\n            message_ts: messageTs,\n\n            // Audit & Dynamic Data\n            alert_description: alertDescription,\n            ttl_seconds: dynamicTTL,\n            \n            // Debugging/Logging Info\n            log_warnings: logMessages\n        }\n    }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -560,
+        1216
+      ],
+      "id": "0743ffd4-d80f-4c64-b8c1-e8c63b3169a3",
+      "name": "Parse Decision"
+    },
+    {
+      "parameters": {
+        "operation": "set",
+        "key": "=whitelist:{{ $json.target }}",
+        "value": "true",
+        "expire": true,
+        "ttl": "={{ $json.ttl_seconds }}"
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        -128,
+        1104
+      ],
+      "id": "942702fb-e9f0-4ea6-b598-4e1cc9806b55",
+      "name": "Add to Whitelist",
+      "credentials": {
+        "redis": {
+          "id": "gBRAiC8E3zTST9i5",
+          "name": "Redis account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "push",
+        "list": "wazuh:actions",
+        "messageData": "={{ JSON.stringify({ task: \"isolate\", target: $json.target, auth: $json.user }) }}"
+      },
+      "type": "n8n-nodes-base.redis",
+      "typeVersion": 1,
+      "position": [
+        -128,
+        1312
+      ],
+      "id": "53912e33-c1f7-424f-8c9d-121c7a3840e4",
+      "name": "Queue Isolation Task",
+      "credentials": {
+        "redis": {
+          "id": "gBRAiC8E3zTST9i5",
+          "name": "Redis account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "channelId": {
+          "__rl": true,
+          "value": "={{ $json.channel_id }}",
+          "mode": "name"
+        },
+        "ts": "={{ $json.message_ts }}",
+        "text": "=✅ ALERT SUPPRESSED & WHITELISTED\n\n*Action:* Ignored (Marked False Positive)\n*Target:* {{ $json.target }}\n*Rule:* {{ $json.alert_description }}\n*Expiration:* {{ $json.expiry_date }}\n*By:* {{ $json.user }} at {{ $now }}",
+        "updateFields": {},
+        "otherOptions": {}
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [
+        304,
+        1104
+      ],
+      "id": "c3b2965a-1c60-48c1-a483-7a97211ff2f0",
+      "name": "Update Slack (Ignore)",
+      "webhookId": "f8336b9b-948f-44a7-9521-24bf47f57759",
+      "credentials": {
+        "slackApi": {
+          "id": "rZnQlMiJiKwYwVpo",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "channelId": {
+          "__rl": true,
+          "value": "={{ $json.channel_id }}",
+          "mode": "name"
+        },
+        "ts": "={{ $json.message_ts }}",
+        "text": "=🚨 HOST ISOLATION TASK QUEUED\n\n*Action:* Containment Initiated\n*Target:* {{ $json.target }}\n*Rule:* {{ $json.alert_description }}\n*Auth By:* {{ $json.user }}\n\n_Task Status: Queued for Python Worker processing._",
+        "updateFields": {},
+        "otherOptions": {}
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [
+        96,
+        1312
+      ],
+      "id": "68c0d3cc-01c7-468e-a334-5a200113b64e",
+      "name": "Update Slack (Isolate)",
+      "webhookId": "61abff0b-4283-4b37-bb32-850e6d797e2b",
+      "credentials": {
+        "slackApi": {
+          "id": "rZnQlMiJiKwYwVpo",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.command }}",
+                    "rightValue": "ignore",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "1b0c3075-7cbd-4123-96ac-e719939c8301"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "0"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "8f37f258-ca5d-4e12-bb02-a6ffaedb551f",
+                    "leftValue": "={{ $json.command }}",
+                    "rightValue": "isolate",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "1"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.3,
+      "position": [
+        -368,
+        1264
+      ],
+      "id": "0373eb44-6926-4a76-acff-203b60dc5267",
+      "name": "Switch"
+    },
+    {
+      "parameters": {
+        "jsCode": "// This code runs once for the whitelisted item.\n\n// TTL is fetched from the data passed by the Parse Decision node.\n// Fallback: Use the data that flowed in, or default to 7 days if property is missing.\nconst TTL_SECONDS = $json.ttl_seconds || 604800; \n\n// A TTL of 0 (Permanent) is handled by not calculating a future date.\nlet formattedExpiration = \"Permanent\";\nconst MILLISECONDS_IN_SECOND = 1000;\n\nif (TTL_SECONDS > 0) {\n    // 1. Calculate the target timestamp in milliseconds\n    const currentTimeMs = Date.now();\n    const expirationTimeMs = currentTimeMs + (TTL_SECONDS * MILLISECONDS_IN_SECOND);\n\n    // 2. Create the Date object for the expiration time\n    const expirationDate = new Date(expirationTimeMs);\n\n    // 3. Format the date to a readable string\n    // We use the JavaScript native toLocaleString with options for a readable format\n    // This respects the timezone set in your OS/container (e.g., Africa/Nairobi)\n    formattedExpiration = expirationDate.toLocaleString('en-US', {\n        month: 'short', \n        day: '2-digit', \n        year: 'numeric',\n        hour: '2-digit', \n        minute: '2-digit',\n        hour12: true,\n        timeZoneName: 'short' \n    });\n}\n\n// Add the formatted time directly to the existing item\n$json.expiry_date = formattedExpiration;\n$json.expiry_seconds = TTL_SECONDS;\n\n// Return the modified item\nreturn $json;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        80,
+        1104
+      ],
+      "id": "6e438c6c-83ad-4640-a3c8-76ace243dbdd",
+      "name": "Calculate Expiration Date"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Pipeline heartbeat": {
+      "main": [
+        [
+          {
+            "node": "Fetch Pending Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Pending Events": {
+      "main": [
+        [
+          {
+            "node": "Is Queue Empty",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalise Payload": {
+      "main": [
+        [
+          {
+            "node": "Query Allowlist",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Allowlist": {
+      "main": [
+        [
+          {
+            "node": "Filter Allowlisted",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Allowlisted": {
+      "main": [
+        [
+          {
+            "node": "No Operation, do nothing",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Increment Attack Metric",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Increment Attack Metric": {
+      "main": [
+        [
+          {
+            "node": "Archive alert",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Register Active Rule",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Cache Rule Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Suppress Noise": {
+      "main": [
+        [
+          {
+            "node": "Update Throttle",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Fetch Pending Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Throttle Cache": {
+      "main": [
+        [
+          {
+            "node": "Suppress Noise",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Throttle": {
+      "main": [
+        [
+          {
+            "node": "Filter Private IPs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Archive alert": {
+      "main": [
+        [
+          {
+            "node": "Query Throttle Cache",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query VirusTotal": {
+      "main": [
+        [
+          {
+            "node": "Format VT data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Private IPs": {
+      "main": [
+        [
+          {
+            "node": "Query VirusTotal",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Set Default Status",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch Pending Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format VT data": {
+      "main": [
+        [
+          {
+            "node": "Combine Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Default Status": {
+      "main": [
+        [
+          {
+            "node": "Combine Context",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Combine Context": {
+      "main": [
+        [
+          {
+            "node": "Notify Slack Channel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Report Schedule": {
+      "main": [
+        [
+          {
+            "node": "Fetch Active Index",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Row": {
+      "main": [
+        [
+          {
+            "node": "Split in Batches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hydrate Context": {
+      "main": [
+        [
+          {
+            "node": "Generate Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compile Report": {
+      "main": [
+        [
+          {
+            "node": "Send Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Queue Empty": {
+      "main": [
+        [
+          {
+            "node": "No Operation, do nothing",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Is Payload Valid",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Is Payload Valid": {
+      "main": [
+        [
+          {
+            "node": "Normalise Payload",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Errors",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify Slack Channel": {
+      "main": [
+        [
+          {
+            "node": "API Ratelimiting",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "API Ratelimiting": {
+      "main": [
+        [
+          {
+            "node": "Fetch Pending Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Active Index": {
+      "main": [
+        [
+          {
+            "node": "Parse Rule IDs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Register Active Rule": {
+      "main": [
+        [
+          {
+            "node": "Update Index Code",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Index Code": {
+      "main": [
+        [
+          {
+            "node": "Set New Index",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Atomic Fetch and Reset": {
+      "main": [
+        [
+          {
+            "node": "Hydrate Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Rule IDs": {
+      "main": [
+        [
+          {
+            "node": "Split in Batches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split in Batches": {
+      "main": [
+        [
+          {
+            "node": "Compile Report",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Atomic Fetch and Reset",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack Webhook": {
+      "main": [
+        [
+          {
+            "node": "Parse Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Decision": {
+      "main": [
+        [
+          {
+            "node": "Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add to Whitelist": {
+      "main": [
+        [
+          {
+            "node": "Calculate Expiration Date",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Queue Isolation Task": {
+      "main": [
+        [
+          {
+            "node": "Update Slack (Isolate)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch": {
+      "main": [
+        [
+          {
+            "node": "Add to Whitelist",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Queue Isolation Task",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Expiration Date": {
+      "main": [
+        [
+          {
+            "node": "Update Slack (Ignore)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner",
+    "executionTimeout": 1800,
+    "availableInMCP": false
+  },
+  "versionId": "76bd9929-f708-48dc-8843-400bcd269204",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "4ca8a3c05101067a08bb444e3136b7ad56da33b42753e806ec59c9bb979668d2"
+  },
+  "id": "5U2TWJtaT4oAgcHv",
+  "tags": []
+}
