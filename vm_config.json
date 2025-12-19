@@ -1,0 +1,7 @@
+{
+  "vm_mapping": {
+    "agent_id_from_wazuh": "Name of VM on virtualbox or virtualisation platform"
+  },
+  "default_snapshot_prefix": "wazuh_isolation_",
+  "snapshot_retention_count": 5
+}
