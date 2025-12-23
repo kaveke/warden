@@ -1,4 +1,4 @@
-# 🛡️ Warden
+# Warden
 
 > **Real-time security orchestration and automated response**
 
@@ -12,34 +12,34 @@ Warden is an event-driven SOAR (Security Orchestration, Automation and Response)
 
 ---
 
-## 🎯 Overview
+## Overview
 
 Traditional security labs rely on polling mechanisms (cron jobs, scheduled queries) that introduce **minutes or hours of latency** between compromise and response. Warden eliminates this delay by streaming security events through a Redis-backed queue, enabling **sub-second detection-to-response workflows**.
 
-### ⚡ Key Features
+### Key Features
 
-- **🚀 Zero-latency pipeline:** Wazuh agent events push instantly into Redis; n8n workflows consume and process in real time
-- **🌐 Production network design:** Dual-NIC architecture separates control plane (Wazuh/n8n/Redis) from data plane (internet access)
-- **♻️ Stateless workflows:** n8n workflows complete and die rather than holding state, surviving restarts without breaking in-flight approvals
-- **👤 Human-in-the-loop:** Slack interactive messages drive analyst decisions with direct deep links into the Wazuh dashboard
-- **🔒 Safe remediation:** Python worker implements mutex locks, input validation, and allowlisted actions for VirtualBox automation
-- **🔗 Stable connectivity:** Cloudflare Tunnel for webhook ingress after validating and discarding unstable alternatives (localtunnel, ngrok free tier)
+- ** Zero-latency pipeline:** Wazuh agent events push instantly into Redis; n8n workflows consume and process in real time
+- ** Production network design:** Dual-NIC architecture separates control plane (Wazuh/n8n/Redis) from data plane (internet access)
+- ** Stateless workflows:** n8n workflows complete and die rather than holding state, surviving restarts without breaking in-flight approvals
+- ** Human-in-the-loop:** Slack interactive messages drive analyst decisions with direct deep links into the Wazuh dashboard
+- ** Safe remediation:** Python worker implements mutex locks, input validation, and allowlisted actions for VirtualBox automation
+- ** Stable connectivity:** Cloudflare Tunnel for webhook ingress after validating and discarding unstable alternatives (localtunnel, ngrok free tier)
 
 ---
 
-## 🏗️ Architecture
+##  Architecture
 
 ### Logical Tiers
 
 | Component | Technology | Responsibility |
 |-----------|-----------|----------------|
-| **🔍 Detection** | Wazuh agent (Parrot OS) | File integrity monitoring, security telemetry |
-| **🎛️ Control Plane** | Wazuh manager (Ubuntu Server) | Event correlation, analysis, dashboard |
-| **🌉 Bridge** | Python integration | Push alerts from Wazuh into Redis (`wazuh:alerts`) |
-| **⚙️ Logic Layer** | n8n + Redis (Docker) | Deduplication, enrichment, Slack UX, analytics |
-| **🔧 Execution** | Python worker (Windows) | Consume commands from Redis, execute VBoxManage |
+| ** Detection** | Wazuh agent (Parrot OS) | File integrity monitoring, security telemetry |
+| ** Control Plane** | Wazuh manager (Ubuntu Server) | Event correlation, analysis, dashboard |
+| ** Bridge** | Python integration | Push alerts from Wazuh into Redis (`wazuh:alerts`) |
+| ** Logic Layer** | n8n + Redis (Docker) | Deduplication, enrichment, Slack UX, analytics |
+| ** Execution** | Python worker (Windows) | Consume commands from Redis, execute VBoxManage |
 
-### 🌍 Network Topology
+###  Network Topology
 
 - **Host:** Windows with Docker Desktop
 - **VMs:** Ubuntu Server (192.168.56.111) and Parrot OS (192.168.56.110)
@@ -48,7 +48,7 @@ Traditional security labs rely on polling mechanisms (cron jobs, scheduled queri
   - Host-only (192.168.56.0/24) for control plane isolation
 - **Tunnel:** Cloudflare Tunnel exposes n8n webhooks to Slack via outbound-only encrypted connection
 
-### 🔄 Data Flow
+###  Data Flow
 
 1. **Detection:** Wazuh agent detects file modification or security event
 2. **Ingestion:** Wazuh manager analyzes event; Python bridge pushes JSON to `wazuh:alerts`
@@ -72,7 +72,7 @@ Traditional security labs rely on polling mechanisms (cron jobs, scheduled queri
 - Slack workspace (admin access for app creation)
 - (Optional) Domain for persistent Cloudflare Tunnel
 
-### 1️⃣ Clone and Configure
+### 1. Clone and Configure
 
 ```bash
 git clone https://github.com/kaveke/warden.git
@@ -85,7 +85,7 @@ Edit `.env` and configure:
 - `HOST_IP` (your VirtualBox host-only adapter IP)
 - `WAZUH_URL` (will be `https://192.168.56.111` after VM setup)
 
-### 2️⃣ Start Docker Stack
+### 2. Start Docker Stack
 
 ```bash
 docker-compose up -d
@@ -94,7 +94,7 @@ docker-compose logs -f n8n # Watch for successful startup
 
 Access n8n at http://localhost:5678 and complete the setup wizard.
 
-### 3️⃣ Deploy VMs and Configure Wazuh
+### 3️. Deploy VMs and Configure Wazuh
 
 Follow the comprehensive guide in [SETUP.md](SETUP.md) to:
 - Provision Ubuntu Server (Wazuh manager) and Parrot OS (agent)
@@ -102,7 +102,7 @@ Follow the comprehensive guide in [SETUP.md](SETUP.md) to:
 - Install and upgrade Wazuh to version 4.10
 - Deploy the Python integration bridge
 
-### 4️⃣ Import Workflows
+### 4️. Import Workflows
 
 1. In n8n, navigate to **Workflows** → **Import from File**
 2. Import comprehensive JSON file from the `workflow/` directory
@@ -111,7 +111,7 @@ Follow the comprehensive guide in [SETUP.md](SETUP.md) to:
    - **Slack:** OAuth token and signing secret from Slack app
    - **VirusTotal (optional):** API key for threat intelligence enrichment
 
-### 5️⃣ Deploy Worker
+### 5️. Deploy Worker
 
 ```bash
 cd workers/
@@ -159,13 +159,13 @@ Warden includes comprehensive test suites for validating workflows independently
 
 ### Why This Architecture?
 
-**🔄 Stateless workflows:** Early iterations used n8n's Wait node to pause execution while awaiting Slack responses. This created a critical failure mode: restarting n8n killed all in-flight approvals. The current design stores state in Slack message IDs, allowing workflows to complete immediately and resume only when the analyst clicks a button.
+**Stateless workflows:** Early iterations used n8n's Wait node to pause execution while awaiting Slack responses. This created a critical failure mode: restarting n8n killed all in-flight approvals. The current design stores state in Slack message IDs, allowing workflows to complete immediately and resume only when the analyst clicks a button.
 
-**🌐 Cloudflare Tunnel reliability:** After encountering data truncation with ngrok's free tier and unpredictable disconnections with localtunnel, I deployed Cloudflare Tunnel for production-grade stability. Quick Tunnels provide temporary URLs for testing; Named Tunnels with custom domains offer permanent webhook endpoints.
+** Cloudflare Tunnel reliability:** After encountering data truncation with ngrok's free tier and unpredictable disconnections with localtunnel, I deployed Cloudflare Tunnel for production-grade stability. Quick Tunnels provide temporary URLs for testing; Named Tunnels with custom domains offer permanent webhook endpoints.
 
-**🔐 Redis mutex locks:** During brute-force simulations, concurrent alert processing triggered simultaneous VBoxManage snapshot operations on the same VM, causing lock errors. The worker now implements per-VM mutex locks using Redis keys with TTL, preventing race conditions.
+** Redis mutex locks:** During brute-force simulations, concurrent alert processing triggered simultaneous VBoxManage snapshot operations on the same VM, causing lock errors. The worker now implements per-VM mutex locks using Redis keys with TTL, preventing race conditions.
 
-**⏱️ Real-time FIM tuning:** Default Wazuh configurations scan files every 12 hours for compliance purposes. I enabled real-time monitoring via kernel inotify on critical paths (`/etc`, `/usr/bin`) while filtering noisy directories, achieving sub-second mean time to detect (MTTD).
+** Real-time FIM tuning:** Default Wazuh configurations scan files every 12 hours for compliance purposes. I enabled real-time monitoring via kernel inotify on critical paths (`/etc`, `/usr/bin`) while filtering noisy directories, achieving sub-second mean time to detect (MTTD).
 
 **Full design rationale and lessons learned:** [ARCHITECTURE.md](ARCHITECTURE.md)
 
@@ -179,11 +179,11 @@ Warden includes comprehensive test suites for validating workflows independently
 - **Redis HA (High Availability):** Single instance without replication or persistence tuning
 - **Tunnel security:** Cloudflare Tunnel is stable but adds an external dependency; production deployments should consider direct cloud hosting or VPN
 
-📘 **See [ARCHITECTURE.md](ARCHITECTURE.md) for migration paths to production-grade configurations.**
+**See [ARCHITECTURE.md](ARCHITECTURE.md) for migration paths to production-grade configurations.**
 
 ---
 
-## 🤝 Contributing
+##  Contributing
 
 This is a portfolio/demonstration project, but suggestions and improvements are welcome:
 
@@ -194,13 +194,13 @@ This is a portfolio/demonstration project, but suggestions and improvements are 
 
 ---
 
-## 📄 License
+##  License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ---
 
-## 🙏 Acknowledgments
+##  Acknowledgments
 
 - **Wazuh** for the open-source SIEM/XDR platform
 - **n8n** for the workflow automation engine
@@ -209,6 +209,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ---
 
-**🛡️ Built by [Kaveke](https://github.com/kaveke)**
+** Built by [Kaveke](https://github.com/kaveke)**
 
 *Demonstrating production-grade security automation architecture*
